@@ -22,6 +22,7 @@ except ImportError:
 
 MODEL_NAME = "BAAI/bge-small-en-v1.5"
 DEFAULT_DATABASE_URL = "postgresql://support:support@localhost:5433/support"
+TRAIN_TICKET_K = 5
 
 
 @lru_cache(maxsize=1)
@@ -96,7 +97,7 @@ def retrieve_kb_chunks(
 
 def retrieve_similar_tickets(
     query: str,
-    k: int = 3,
+    k: int = TRAIN_TICKET_K,
     db_url: str | None = None,
 ) -> list[dict[str, Any]]:
     """Retrieve top-k similar historical tickets from the train split using pgvector.
@@ -145,7 +146,7 @@ def retrieve_similar_tickets(
 def retrieve(
     query: str,
     kb_k: int = 4,
-    ticket_k: int = 3,
+    ticket_k: int = TRAIN_TICKET_K,
     db_url: str | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Retrieve both top-k KB chunks and top-k similar historical train tickets."""

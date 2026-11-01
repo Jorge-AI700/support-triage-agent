@@ -85,3 +85,35 @@ def test_integer_and_string_retrieved_ids():
     assert res["all_cited_ids_retrieved"] is True
     assert res["uncited_sentences"] == []
     assert res["grounded"] is True
+
+
+def test_uncited_greeting_is_not_exempted():
+    reply = "Hello!\nTrack your order from the order page [KB-01]."
+    res = check_citations(reply, retrieved_article_ids=["KB-01"])
+
+    assert res["uncited_sentences"] == ["Hello!"]
+    assert res["grounded"] is False
+
+
+def test_v2_requires_citation_at_sentence_end_while_v1_remains_available():
+    reply = "According to [KB-01], track your order from the order page."
+
+    assert check_citations(reply, ["KB-01"], prompt_version="v1")["grounded"] is True
+    v2 = check_citations(reply, ["KB-01"], prompt_version="v2")
+    assert v2["uncited_sentences"] == [reply]
+    assert v2["grounded"] is False
+
+
+def test_inline_numbered_list_markers_are_not_uncited_sentences():
+    from pipeline.citations import check_citations, split_sentences
+
+    reply = "1. Sign in at acme-store.example.com [KB-02]. 2. Open the order [KB-02]. 3. Click Save [KB-02]."
+    assert split_sentences(reply) == [
+        "Sign in at acme-store.example.com [KB-02].",
+        "Open the order [KB-02].",
+        "Click Save [KB-02].",
+    ]
+    for version in ("v1", "v2"):
+        result = check_citations(reply, ["KB-02"], prompt_version=version)
+        assert result["grounded"] is True
+        assert result["uncited_sentences"] == []

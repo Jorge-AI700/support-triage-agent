@@ -3,18 +3,18 @@
   "count": 200,
   "intent_accuracy": 0.9,
   "kb_hit_rate_at_4": 0.91,
-  "grounded_rate": 0.83,
-  "escalation_rate": 0.23,
-  "non_escalated_count": 154,
-  "accuracy_on_non_escalated": 0.922077922077922,
+  "grounded_rate": 0.88,
+  "escalation_rate": 0.185,
+  "non_escalated_count": 163,
+  "accuracy_on_non_escalated": 0.9263803680981595,
   "classification_error_count": 20,
   "escalation_recall_on_errors": 0.4,
-  "cost_usd": 0.03367351819,
+  "cost_usd": 0.0337,
   "escalation_reasons": [
     {
       "reason": "not_grounded",
-      "count": 34,
-      "rate": 0.17
+      "count": 24,
+      "rate": 0.12
     },
     {
       "reason": "human_required_intent",

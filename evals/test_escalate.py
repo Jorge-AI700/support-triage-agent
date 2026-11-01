@@ -35,6 +35,34 @@ def test_confidence_below_threshold_escalates():
     assert decide(confidence=threshold - 0.01)["reasons"] == ["low_confidence"]
 
 
+def test_v2_llm_knn_disagreement_at_threshold_escalates():
+    threshold = ESCALATION_CONFIG["knn_agreement_threshold"]
+
+    assert decide(
+        knn_majority_intent="delivery_period",
+        knn_agreement=threshold,
+    )["reasons"] == ["llm_knn_disagreement"]
+    assert decide(
+        knn_majority_intent="delivery_period",
+        knn_agreement=threshold - 0.01,
+    )["escalate"] is False
+
+
+def test_v1_rules_ignore_knn_disagreement():
+    assert decide(
+        prompt_version="v1",
+        knn_majority_intent="delivery_period",
+        knn_agreement=1.0,
+    )["escalate"] is False
+
+
+def test_knn_agreement_does_not_escalate_when_llm_agrees():
+    assert decide(
+        knn_majority_intent="track_order",
+        knn_agreement=1.0,
+    )["escalate"] is False
+
+
 @pytest.mark.parametrize(
     "citation_check",
     [

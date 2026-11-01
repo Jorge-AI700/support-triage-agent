@@ -32,7 +32,7 @@ from pipeline.retrieve import (
     retrieve_similar_tickets,
 )
 
-SYSTEM_PROMPT = """You are an expert customer support agent for Acme Store.
+SYSTEM_PROMPT_V1 = """You are an expert customer support agent for Acme Store.
 Draft a clear, concise, and helpful reply to the customer's support request.
 
 Rules you MUST strictly follow:
@@ -41,7 +41,27 @@ Rules you MUST strictly follow:
 3. If the provided Knowledge Base chunks do not contain sufficient information to answer the inquiry, state: 'The provided knowledge base does not contain information to resolve this issue. I will escalate your ticket to a human support agent.'
 4. Be direct, concise, and begin immediately with the cited steps or facts."""
 
-RAG_PROMPT_VERSION = "grounded-reply-v1"
+NOT_COVERED_REPLY = "ESCALATE: not covered by help center"
+SYSTEM_PROMPT_V2 = f"""You are an expert customer support agent for Acme Store.
+Draft a clear, concise, and helpful reply to the customer's support request.
+
+Rules you MUST strictly follow:
+1. Answer ONLY using facts directly stated in the provided Knowledge Base context chunks. Do not assume, extrapolate, or introduce outside information.
+2. Every sentence and every list item MUST end with one or more citations to the provided chunks, formatted exactly as [KB-xx]. A citation earlier in a sentence is not sufficient.
+3. Do not write greetings, preambles, filler, transitions, or sign-offs. There is no uncited greeting exception.
+4. If the chunks do not cover the customer's question, reply with exactly this text and nothing else: {NOT_COVERED_REPLY}
+5. Otherwise, begin immediately with cited facts or steps and keep the reply concise."""
+
+PROMPT_VERSIONS = ("v1", "v2")
+DEFAULT_PROMPT_VERSION = "v2"
+RAG_PROMPT_VERSION_TAGS = {
+    "v1": "grounded-reply-v1",
+    "v2": "grounded-reply-v2",
+}
+SYSTEM_PROMPTS = {"v1": SYSTEM_PROMPT_V1, "v2": SYSTEM_PROMPT_V2}
+# Compatibility aliases for the original v1 module constants.
+SYSTEM_PROMPT = SYSTEM_PROMPT_V1
+RAG_PROMPT_VERSION = RAG_PROMPT_VERSION_TAGS["v1"]
 
 
 class LLMClient(Protocol):
@@ -54,6 +74,14 @@ class Cache(Protocol):
     def get(self, key: str) -> Mapping[str, Any] | None: ...
 
     def set(self, key: str, response: Mapping[str, Any]) -> None: ...
+
+
+def _validate_prompt_version(prompt_version: str) -> str:
+    if prompt_version not in PROMPT_VERSIONS:
+        raise ValueError(
+            f"prompt_version must be one of {PROMPT_VERSIONS}, got {prompt_version!r}"
+        )
+    return prompt_version
 
 
 def build_user_prompt(
@@ -85,10 +113,15 @@ def reply_cache_key(
     ticket_text: str,
     predicted_intent: str | None,
     kb_chunks: Sequence[dict[str, Any]],
+    prompt_version: str = DEFAULT_PROMPT_VERSION,
 ) -> str:
     """Build a stable cache key from every input that can affect the reply."""
+    prompt_version = _validate_prompt_version(prompt_version)
     user_prompt = build_user_prompt(ticket_text, predicted_intent, kb_chunks)
-    raw = f"{model}{RAG_PROMPT_VERSION}{SYSTEM_PROMPT}{user_prompt}".encode("utf-8")
+    raw = (
+        f"{model}{RAG_PROMPT_VERSION_TAGS[prompt_version]}"
+        f"{SYSTEM_PROMPTS[prompt_version]}{user_prompt}"
+    ).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -101,6 +134,7 @@ def draft_reply(
     db_url: str | None = None,
     retrieved_chunks: Sequence[dict[str, Any]] | None = None,
     cache: Cache | None = None,
+    prompt_version: str = DEFAULT_PROMPT_VERSION,
 ) -> dict[str, Any]:
     """Retrieve KB chunks, prompt the LLM for a grounded reply, and extract citations.
 
@@ -123,6 +157,7 @@ def draft_reply(
     """
     if client is None:
         client = OpenRouterClient()
+    prompt_version = _validate_prompt_version(prompt_version)
 
     # 1. Retrieve top-k KB chunks unless the caller already did so.
     if retrieved_chunks is None:
@@ -133,19 +168,36 @@ def draft_reply(
     # 2. Build prompt and call LLM
     user_prompt = build_user_prompt(ticket_text, predicted_intent, retrieved_chunks)
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": SYSTEM_PROMPTS[prompt_version]},
         {"role": "user", "content": user_prompt},
     ]
 
-    key = reply_cache_key(client.model, ticket_text, predicted_intent, retrieved_chunks)
+    key = reply_cache_key(
+        client.model,
+        ticket_text,
+        predicted_intent,
+        retrieved_chunks,
+        prompt_version,
+    )
     cached = cache.get(key) if cache is not None else None
     if cached is not None and isinstance(cached.get("reply"), str):
         reply = str(cached["reply"]).strip()
         usage: dict[str, Any] = {}
         cache_hit = True
+    elif prompt_version == "v2" and not retrieved_chunks:
+        # Empty retrieval is deterministically uncovered; do not spend an LLM
+        # call asking it to rediscover that fact.
+        reply = NOT_COVERED_REPLY
+        usage = {}
+        cache_hit = False
+        if cache is not None:
+            cache.set(key, {"reply": reply})
     else:
         llm_resp = client.complete(messages)
         reply = llm_resp.content.strip()
+        if prompt_version == "v2" and NOT_COVERED_REPLY in reply:
+            # The fallback contract is exact even if a model adds a preamble.
+            reply = NOT_COVERED_REPLY
         usage = dict(llm_resp.usage)
         cache_hit = False
         if cache is not None:
@@ -177,7 +229,11 @@ def draft_reply(
     }
 
 
-def run_rag_cli(ticket_id: int, db_url: str | None = None) -> None:
+def run_rag_cli(
+    ticket_id: int,
+    db_url: str | None = None,
+    prompt_version: str = DEFAULT_PROMPT_VERSION,
+) -> None:
     """Run retrieval, drafting, and citation checking for a given ticket ID and print outputs."""
     db_url = db_url or os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 
@@ -220,7 +276,7 @@ def run_rag_cli(ticket_id: int, db_url: str | None = None) -> None:
 
     # 1. Retrieval
     kb_chunks = retrieve_kb_chunks(ticket_text, k=4, db_url=db_url)
-    similar_tickets = retrieve_similar_tickets(ticket_text, k=3, db_url=db_url)
+    similar_tickets = retrieve_similar_tickets(ticket_text, k=5, db_url=db_url)
 
     print("\n--- [RETRIEVAL: Top-4 Knowledge Base Chunks] ---")
     for idx, c in enumerate(kb_chunks, 1):
@@ -228,14 +284,20 @@ def run_rag_cli(ticket_id: int, db_url: str | None = None) -> None:
         print(f"  {idx}. [{c['kb_id']}] {c['article_title']} (score: {c['score']:.4f}, chunk_id: {c['chunk_id']})")
         print(f"     Preview: {preview}...")
 
-    print("\n--- [RETRIEVAL: Top-3 Similar Past Train Tickets] ---")
+    print("\n--- [RETRIEVAL: Top-5 Similar Past Train Tickets] ---")
     for idx, t in enumerate(similar_tickets, 1):
         preview = t["instruction"].replace("\n", " ")[:90]
         print(f"  {idx}. Ticket #{t['ticket_id']} [{t['intent']}] (score: {t['score']:.4f})")
         print(f"     Instruction: {preview}...")
 
     # 2. Draft Reply
-    rag_result = draft_reply(ticket_text, predicted_intent=intent, kb_k=4, db_url=db_url)
+    rag_result = draft_reply(
+        ticket_text,
+        predicted_intent=intent,
+        kb_k=4,
+        db_url=db_url,
+        prompt_version=prompt_version,
+    )
     reply = rag_result["reply"]
 
     print("\n--- [DRAFT REPLY] ---")
@@ -243,7 +305,11 @@ def run_rag_cli(ticket_id: int, db_url: str | None = None) -> None:
 
     # 3. Citation Check
     retrieved_article_ids = [c["kb_id"] for c in kb_chunks]
-    citation_check = check_citations(reply, retrieved_article_ids)
+    citation_check = check_citations(
+        reply,
+        retrieved_article_ids,
+        prompt_version=prompt_version,
+    )
 
     print("\n--- [CITATION VERIFICATION] ---")
     print(f"  Grounded:                {citation_check['grounded']}")
@@ -264,9 +330,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate RAG grounded auto-reply for a support ticket.")
     parser.add_argument("--ticket-id", type=int, required=True, help="ID of ticket from PostgreSQL tickets table.")
     parser.add_argument("--db-url", type=str, default=None, help="PostgreSQL connection string.")
+    parser.add_argument(
+        "--prompt-version",
+        choices=PROMPT_VERSIONS,
+        default=DEFAULT_PROMPT_VERSION,
+    )
     args = parser.parse_args()
 
-    run_rag_cli(ticket_id=args.ticket_id, db_url=args.db_url)
+    run_rag_cli(
+        ticket_id=args.ticket_id,
+        db_url=args.db_url,
+        prompt_version=args.prompt_version,
+    )
 
 
 if __name__ == "__main__":

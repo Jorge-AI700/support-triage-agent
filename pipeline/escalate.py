@@ -13,6 +13,7 @@ from typing import Any
 ESCALATION_CONFIG: dict[str, Any] = {
     "confidence_threshold": 0.60,
     "kb_score_threshold": 0.50,
+    "knn_agreement_threshold": 0.60,
     "human_required_intents": frozenset({"contact_human_agent", "complaint"}),
     # This is intentionally small and explicit. Word-boundary matching below
     # avoids false positives such as matching "hell" inside "hello".
@@ -45,6 +46,10 @@ def should_escalate(
     retrieval_scores: Sequence[float],
     ticket_text: str,
     predicted_intent: str,
+    *,
+    prompt_version: str = "v2",
+    knn_majority_intent: str | None = None,
+    knn_agreement: float | None = None,
 ) -> dict[str, Any]:
     """Evaluate all escalation rules and return stable, report-friendly reasons.
 
@@ -53,8 +58,20 @@ def should_escalate(
     """
     reasons: list[str] = []
 
+    if prompt_version not in {"v1", "v2"}:
+        raise ValueError("prompt_version must be 'v1' or 'v2'")
+
     if confidence < ESCALATION_CONFIG["confidence_threshold"]:
         reasons.append("low_confidence")
+
+    if (
+        prompt_version == "v2"
+        and knn_majority_intent is not None
+        and predicted_intent != knn_majority_intent
+        and knn_agreement is not None
+        and float(knn_agreement) >= ESCALATION_CONFIG["knn_agreement_threshold"]
+    ):
+        reasons.append("llm_knn_disagreement")
 
     # ``check_citations`` defines grounded as: at least one citation, every
     # citation belongs to the retrieved set, and every sentence is cited. The

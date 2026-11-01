@@ -14,16 +14,20 @@ from dotenv import load_dotenv
 
 from pipeline.citations import check_citations
 from pipeline.classify import (
+    DEFAULT_PROMPT_VERSION,
     DEFAULT_DATABASE_URL,
+    PROMPT_VERSIONS,
     MemoryCache,
     cache_key as classification_cache_key,
     classify_instruction,
+    knn_summary,
     load_cache,
+    retrieve_training_examples,
 )
 from pipeline.escalate import should_escalate
 from pipeline.llm import OpenRouterClient
 from pipeline.rag import draft_reply, reply_cache_key
-from pipeline.retrieve import retrieve_kb_chunks
+from pipeline.retrieve import retrieve_kb_chunks, retrieve_similar_tickets
 
 load_dotenv()
 
@@ -44,6 +48,8 @@ class Ticket:
 class Prediction:
     intent: str
     confidence: float
+    knn_majority_intent: str | None = None
+    knn_agreement: float | None = None
 
 
 def fetch_test_tickets(
@@ -66,22 +72,30 @@ def fetch_predictions(
     conn: Any,
     ticket_ids: Sequence[int],
     classify_run_id: str | None,
+    prompt_version: str,
 ) -> dict[int, Prediction]:
     """Load the newest prediction per sampled ticket from a requested run."""
     if not classify_run_id or not ticket_ids:
         return {}
     rows = conn.execute(
         """
-        SELECT DISTINCT ON (ticket_id) ticket_id, pred_intent, confidence
+        SELECT DISTINCT ON (ticket_id)
+            ticket_id, pred_intent, confidence,
+            knn_majority_intent, knn_agreement
         FROM predictions
-        WHERE run_id = %s AND ticket_id = ANY(%s)
+        WHERE run_id = %s AND prompt_version = %s AND ticket_id = ANY(%s)
         ORDER BY ticket_id, id DESC
         """,
-        (classify_run_id, list(ticket_ids)),
+        (classify_run_id, prompt_version, list(ticket_ids)),
     ).fetchall()
     return {
-        int(ticket_id): Prediction(str(intent or "unknown"), float(confidence or 0.0))
-        for ticket_id, intent, confidence in rows
+        int(ticket_id): Prediction(
+            str(intent or "unknown"),
+            float(confidence or 0.0),
+            str(majority_intent) if majority_intent is not None else None,
+            float(agreement) if agreement is not None else None,
+        )
+        for ticket_id, intent, confidence, majority_intent, agreement in rows
     }
 
 
@@ -98,6 +112,8 @@ def _classify_missing(
     client: Any,
     cache: MemoryCache,
     workers: int,
+    prompt_version: str,
+    neighbors_by_ticket: Mapping[int, Sequence[Mapping[str, Any]]],
 ) -> dict[int, float]:
     """Classify only missing tickets, once per unique cache key.
 
@@ -107,13 +123,25 @@ def _classify_missing(
     missing = [ticket for ticket in tickets if ticket.ticket_id not in predictions]
     tickets_by_key: dict[str, list[Ticket]] = {}
     for ticket in missing:
-        key = classification_cache_key(client.model, ticket.text)
+        key = classification_cache_key(
+            client.model,
+            ticket.text,
+            prompt_version,
+            neighbors_by_ticket.get(ticket.ticket_id, ()),
+        )
         tickets_by_key.setdefault(key, []).append(ticket)
 
     cost_by_ticket: dict[int, float] = {}
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(classify_instruction, group[0].text, client, cache): key
+            executor.submit(
+                classify_instruction,
+                group[0].text,
+                client,
+                cache,
+                prompt_version=prompt_version,
+                similar_tickets=neighbors_by_ticket.get(group[0].ticket_id, ()),
+            ): key
             for key, group in tickets_by_key.items()
         }
         for future in as_completed(futures):
@@ -122,7 +150,10 @@ def _classify_missing(
             group = tickets_by_key[key]
             for ticket in group:
                 predictions[ticket.ticket_id] = Prediction(
-                    result.intent, result.confidence
+                    result.intent,
+                    result.confidence,
+                    result.knn_majority_intent,
+                    result.knn_agreement,
                 )
             cost_by_ticket[group[0].ticket_id] = _usage_cost(result.usage)
     return cost_by_ticket
@@ -154,6 +185,7 @@ def _draft_all(
     client: Any,
     cache: MemoryCache,
     workers: int,
+    prompt_version: str,
 ) -> tuple[dict[int, dict[str, Any]], dict[int, float]]:
     """Draft once per unique prompt and fan the result out to duplicate tickets."""
     tickets_by_key: dict[str, list[Ticket]] = {}
@@ -164,6 +196,7 @@ def _draft_all(
             ticket.text,
             prediction.intent,
             retrieved[ticket.ticket_id],
+            prompt_version,
         )
         tickets_by_key.setdefault(key, []).append(ticket)
 
@@ -182,6 +215,7 @@ def _draft_all(
                     client=client,
                     retrieved_chunks=retrieved[ticket.ticket_id],
                     cache=cache,
+                    prompt_version=prompt_version,
                 )
             ] = key
 
@@ -201,9 +235,11 @@ def run_e2e(
     limit: int = DEFAULT_LIMIT,
     classify_run_id: str | None = None,
     workers: int = DEFAULT_WORKERS,
+    prompt_version: str = DEFAULT_PROMPT_VERSION,
     database_url: str | None = None,
     client: Any | None = None,
     retriever: Callable[..., list[dict[str, Any]]] = retrieve_kb_chunks,
+    ticket_retriever: Callable[..., list[dict[str, Any]]] = retrieve_similar_tickets,
 ) -> dict[str, Any]:
     """Run E2E evaluation and replace the stored rows for ``run_id``."""
     import psycopg
@@ -215,6 +251,8 @@ def run_e2e(
         raise ValueError("limit must be greater than zero")
     if workers <= 0:
         raise ValueError("workers must be greater than zero")
+    if prompt_version not in PROMPT_VERSIONS:
+        raise ValueError(f"prompt_version must be one of {PROMPT_VERSIONS}")
 
     database_url = database_url or os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
     client = client or OpenRouterClient()
@@ -227,9 +265,43 @@ def run_e2e(
             conn,
             [ticket.ticket_id for ticket in tickets],
             classify_run_id,
+            prompt_version,
         )
+
+    examples_by_text = (
+        retrieve_training_examples(
+            (ticket.text for ticket in tickets),
+            database_url=database_url,
+            workers=workers,
+            retriever=ticket_retriever,
+        )
+        if prompt_version == "v2"
+        else {}
+    )
+    neighbors_by_ticket = {
+        ticket.ticket_id: examples_by_text.get(ticket.text, []) for ticket in tickets
+    }
+    if prompt_version == "v2":
+        # A reused v2 prediction should already have these fields. Recomputing
+        # missing values keeps older partial runs safe after the v2 migration.
+        for ticket_id, prediction in list(predictions.items()):
+            if prediction.knn_majority_intent is None:
+                majority, agreement = knn_summary(neighbors_by_ticket[ticket_id])
+                predictions[ticket_id] = Prediction(
+                    prediction.intent,
+                    prediction.confidence,
+                    majority,
+                    agreement,
+                )
+
+    with psycopg.connect(database_url) as conn:
         missing_keys = {
-            classification_cache_key(client.model, ticket.text)
+            classification_cache_key(
+                client.model,
+                ticket.text,
+                prompt_version,
+                neighbors_by_ticket.get(ticket.ticket_id, ()),
+            )
             for ticket in tickets
             if ticket.ticket_id not in predictions
         }
@@ -237,7 +309,13 @@ def run_e2e(
 
     reused_predictions = len(predictions)
     classification_costs = _classify_missing(
-        tickets, predictions, client, classification_cache, workers
+        tickets,
+        predictions,
+        client,
+        classification_cache,
+        workers,
+        prompt_version,
+        neighbors_by_ticket,
     )
 
     print(
@@ -252,6 +330,7 @@ def run_e2e(
             ticket.text,
             predictions[ticket.ticket_id].intent,
             retrieved[ticket.ticket_id],
+            prompt_version,
         )
         for ticket in tickets
     }
@@ -259,7 +338,13 @@ def run_e2e(
         reply_cache = MemoryCache(load_cache(conn, reply_keys))
 
     drafts, reply_costs = _draft_all(
-        tickets, predictions, retrieved, client, reply_cache, workers
+        tickets,
+        predictions,
+        retrieved,
+        client,
+        reply_cache,
+        workers,
+        prompt_version,
     )
 
     rows: list[tuple[Any, ...]] = []
@@ -274,7 +359,11 @@ def run_e2e(
         retrieved_article_ids = [
             chunk.get("kb_id", chunk.get("article_id")) for chunk in chunks
         ]
-        citation_check = check_citations(draft["reply"], retrieved_article_ids)
+        citation_check = check_citations(
+            draft["reply"],
+            retrieved_article_ids,
+            prompt_version=prompt_version,
+        )
         scores = [float(chunk["score"]) for chunk in chunks if chunk.get("score") is not None]
         escalation = should_escalate(
             prediction.confidence,
@@ -282,6 +371,9 @@ def run_e2e(
             scores,
             ticket.text,
             prediction.intent,
+            prompt_version=prompt_version,
+            knn_majority_intent=prediction.knn_majority_intent,
+            knn_agreement=prediction.knn_agreement,
         )
         top_kb_score = max(scores, default=None)
         kb_hit = any(
@@ -310,6 +402,9 @@ def run_e2e(
                 top_kb_score,
                 kb_hit,
                 row_cost,
+                prompt_version,
+                prediction.knn_majority_intent,
+                prediction.knn_agreement,
             )
         )
 
@@ -332,9 +427,11 @@ def run_e2e(
                 INSERT INTO e2e_results (
                     ticket_id, run_id, pred_intent, true_intent, confidence,
                     reply, citations, grounded, escalated, reasons,
-                    top_kb_score, kb_hit, cost_usd
+                    top_kb_score, kb_hit, cost_usd, prompt_version,
+                    knn_majority_intent, knn_agreement
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s)
                 """,
                 rows,
             )
@@ -347,6 +444,7 @@ def run_e2e(
         "escalated": escalated_count,
         "kb_hits": kb_hit_count,
         "total_cost_usd": total_cost,
+        "prompt_version": prompt_version,
     }
     print(f"Wrote {len(rows)} E2E results for run {run_id!r}.")
     print(f"Incremental cost: ${total_cost:.6f} USD")
@@ -366,12 +464,18 @@ def main() -> None:
     parser.add_argument("--limit", type=_positive_int, default=DEFAULT_LIMIT)
     parser.add_argument("--classify-run-id")
     parser.add_argument("--workers", type=_positive_int, default=DEFAULT_WORKERS)
+    parser.add_argument(
+        "--prompt-version",
+        choices=PROMPT_VERSIONS,
+        default=DEFAULT_PROMPT_VERSION,
+    )
     args = parser.parse_args()
     run_e2e(
         run_id=args.run_id,
         limit=args.limit,
         classify_run_id=args.classify_run_id,
         workers=args.workers,
+        prompt_version=args.prompt_version,
     )
 
 

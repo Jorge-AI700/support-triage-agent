@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS predictions (
     confidence REAL,
     escalated BOOLEAN,
     run_id TEXT,
+    prompt_version TEXT NOT NULL DEFAULT 'v1' CHECK (prompt_version IN ('v1', 'v2')),
+    knn_majority_intent TEXT,
+    knn_agreement REAL CHECK (knn_agreement BETWEEN 0 AND 1),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -63,6 +66,9 @@ CREATE TABLE IF NOT EXISTS e2e_results (
     top_kb_score REAL,
     kb_hit BOOLEAN NOT NULL,
     cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+    prompt_version TEXT NOT NULL DEFAULT 'v1' CHECK (prompt_version IN ('v1', 'v2')),
+    knn_majority_intent TEXT,
+    knn_agreement REAL CHECK (knn_agreement BETWEEN 0 AND 1),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (run_id, ticket_id)
 );

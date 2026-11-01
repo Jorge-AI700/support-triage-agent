@@ -8,6 +8,8 @@ import json
 import os
 import random
 import threading
+from collections import Counter
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Protocol
@@ -19,12 +21,18 @@ from pipeline.llm import LLMResponse, OpenRouterClient
 load_dotenv()
 
 DEFAULT_DATABASE_URL = "postgresql://support:support@localhost:5433/support"
-PROMPT_VERSION = "bitext-intent-v1"
+PROMPT_VERSIONS = ("v1", "v2")
+DEFAULT_PROMPT_VERSION = "v2"
+PROMPT_VERSION_TAGS = {
+    "v1": "bitext-intent-v1",
+    "v2": "bitext-intent-v2",
+}
+KNN_K = 5
 DEFAULT_WORKERS = 16
 
 # Complete Bitext taxonomy. Categories deliberately do not live here: each run
 # derives its fixed intent/category mapping from the ingested tickets table.
-INTENT_DESCRIPTIONS: dict[str, str] = {
+INTENT_DESCRIPTIONS_V1: dict[str, str] = {
     "cancel_order": "The customer wants to cancel an existing order.",
     "change_order": "The customer wants to modify items or quantities in an order.",
     "change_shipping_address": "The customer wants to change an order's delivery address.",
@@ -53,17 +61,61 @@ INTENT_DESCRIPTIONS: dict[str, str] = {
     "track_order": "The customer wants the status or location of an order.",
     "track_refund": "The customer wants the status of an already requested refund.",
 }
-ALLOWED_INTENTS = tuple(INTENT_DESCRIPTIONS)
+INTENT_DESCRIPTIONS_V2: dict[str, str] = {
+    "cancel_order": "Cancel an existing order; not edit its items or address.",
+    "change_order": "Change items or quantities in an existing order; not cancel it.",
+    "change_shipping_address": "Change the delivery address on an existing order; not add an account address.",
+    "check_cancellation_fee": "Ask whether cancelling an order incurs a fee.",
+    "check_invoice": "Look up or view an existing invoice's details; not request or download a copy.",
+    "check_payment_methods": "Ask which payment methods are accepted.",
+    "check_refund_policy": "Ask about refund rules or eligibility; not request or track a refund.",
+    "complaint": "Make a complaint about the service or customer experience.",
+    "contact_customer_service": "Ask how to contact customer support; not explicitly demand a human agent.",
+    "contact_human_agent": "Explicitly request a live human agent.",
+    "create_account": "Create a new account; not fix a registration failure.",
+    "delete_account": "Delete or permanently close an account.",
+    "delivery_options": "Ask which delivery or shipping methods are available; not how to place an order.",
+    "delivery_period": "Ask how long delivery normally takes or for an ETA; not the current location/status of a placed order.",
+    "edit_account": "Change profile or account details; not switch to a different existing account.",
+    "get_invoice": "Request, receive, print, or download a copy of an invoice; not inspect its existing details.",
+    "get_refund": "Request or initiate a new refund; not track an already requested refund.",
+    "newsletter_subscription": "Subscribe, unsubscribe, or otherwise manage a newsletter subscription.",
+    "payment_issue": "Report a failed, declined, duplicated, or otherwise problematic payment.",
+    "place_order": "Ask how to submit or purchase a new order; not choose among delivery methods.",
+    "recover_password": "Recover or reset a forgotten password.",
+    "registration_problems": "Report a problem while signing up or registering; not simply create an account.",
+    "review": "Submit or discuss a product or service review.",
+    "set_up_shipping_address": "Add or configure a shipping address on the account; not change an order already placed.",
+    "switch_account": "Move or sign in to a different existing account; not edit account/profile details.",
+    "track_order": "Ask for the current status or location of an already placed order; not the usual delivery duration.",
+    "track_refund": "Ask for the status or timing of an already requested refund; not request a new refund.",
+}
+# Backwards-compatible export used by validation and callers that inspect the
+# taxonomy. V2 is the default while the exact v1 definitions remain versioned.
+INTENT_DESCRIPTIONS = INTENT_DESCRIPTIONS_V2
+ALLOWED_INTENTS = tuple(INTENT_DESCRIPTIONS_V1)
 
-SYSTEM_PROMPT = """You classify customer-support tickets into exactly one Bitext intent.
+SYSTEM_PROMPT_PREFIX = """You classify customer-support tickets into exactly one Bitext intent.
 Return only a strict JSON object with this schema:
 {"intent": "one_allowed_intent", "confidence": 0.0}
 Confidence must be a number from 0 to 1. Do not add markdown or other keys.
 
 Allowed intents:
-""" + "\n".join(
-    f"- {intent}: {description}" for intent, description in INTENT_DESCRIPTIONS.items()
-)
+"""
+SYSTEM_PROMPTS = {
+    "v1": SYSTEM_PROMPT_PREFIX
+    + "\n".join(
+        f"- {intent}: {description}"
+        for intent, description in INTENT_DESCRIPTIONS_V1.items()
+    ),
+    "v2": SYSTEM_PROMPT_PREFIX
+    + "\n".join(
+        f"- {intent}: {description}"
+        for intent, description in INTENT_DESCRIPTIONS_V2.items()
+    ),
+}
+# Compatibility alias for code that imported the original prompt directly.
+SYSTEM_PROMPT = SYSTEM_PROMPTS["v1"]
 
 
 class LLMClient(Protocol):
@@ -85,6 +137,8 @@ class Classification:
     usage: dict[str, Any]
     cache_hit: bool
     cache_key: str
+    knn_majority_intent: str | None = None
+    knn_agreement: float | None = None
 
 
 class MemoryCache:
@@ -113,9 +167,84 @@ class MemoryCache:
             }
 
 
-def cache_key(model: str, instruction: str) -> str:
-    """Return the required model + prompt-version + instruction SHA-256 key."""
-    raw = f"{model}{PROMPT_VERSION}{instruction}".encode("utf-8")
+def _validate_prompt_version(prompt_version: str) -> str:
+    if prompt_version not in PROMPT_VERSIONS:
+        raise ValueError(
+            f"prompt_version must be one of {PROMPT_VERSIONS}, got {prompt_version!r}"
+        )
+    return prompt_version
+
+
+def _example_payload(similar_tickets: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """Return only stable prompt inputs from retrieved train tickets."""
+    return [
+        {"instruction": str(ticket.get("instruction", "")), "intent": str(ticket.get("intent", ""))}
+        for ticket in similar_tickets[:KNN_K]
+    ]
+
+
+def knn_summary(
+    similar_tickets: Sequence[Mapping[str, Any]],
+) -> tuple[str | None, float | None]:
+    """Return nearest-neighbor majority and its share, breaking ties by rank."""
+    labels = [
+        str(ticket.get("intent"))
+        for ticket in similar_tickets[:KNN_K]
+        if ticket.get("intent") in ALLOWED_INTENTS
+    ]
+    if not labels:
+        return None, None
+    majority, count = Counter(labels).most_common(1)[0]
+    return majority, count / len(labels)
+
+
+def build_classification_messages(
+    instruction: str,
+    *,
+    prompt_version: str = DEFAULT_PROMPT_VERSION,
+    similar_tickets: Sequence[Mapping[str, Any]] = (),
+) -> list[dict[str, str]]:
+    """Build the versioned classifier prompt with v2 train-only examples."""
+    prompt_version = _validate_prompt_version(prompt_version)
+    user_parts = [
+        "Classify this customer-support ticket. Return only the required JSON."
+    ]
+    if prompt_version == "v2":
+        examples = _example_payload(similar_tickets)
+        if examples:
+            user_parts.append(
+                "Here are the five most similar labeled examples from the training set:\n"
+                + "\n".join(
+                    f"Example {index}: Ticket={json.dumps(example['instruction'])}; "
+                    f"Intent={example['intent']}"
+                    for index, example in enumerate(examples, 1)
+                )
+            )
+    user_parts.append(f"Ticket: {instruction}")
+    return [
+        {"role": "system", "content": SYSTEM_PROMPTS[prompt_version]},
+        {"role": "user", "content": "\n\n".join(user_parts)},
+    ]
+
+
+def cache_key(
+    model: str,
+    instruction: str,
+    prompt_version: str = DEFAULT_PROMPT_VERSION,
+    similar_tickets: Sequence[Mapping[str, Any]] = (),
+) -> str:
+    """Return a key containing the model, prompt version, ticket, and examples."""
+    prompt_version = _validate_prompt_version(prompt_version)
+    if prompt_version == "v1":
+        # Preserve v1 cache compatibility exactly.
+        raw = f"{model}{PROMPT_VERSION_TAGS['v1']}{instruction}".encode("utf-8")
+    else:
+        prompt_inputs = json.dumps(
+            _example_payload(similar_tickets), sort_keys=True, separators=(",", ":")
+        )
+        raw = (
+            f"{model}{PROMPT_VERSION_TAGS[prompt_version]}{instruction}{prompt_inputs}"
+        ).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -143,28 +272,43 @@ def _validate_payload(payload: Any) -> tuple[str, float]:
     return str(intent), float(confidence)
 
 
-def classify_instruction(instruction: str, client: LLMClient, cache: Cache) -> Classification:
+def classify_instruction(
+    instruction: str,
+    client: LLMClient,
+    cache: Cache,
+    *,
+    prompt_version: str = DEFAULT_PROMPT_VERSION,
+    similar_tickets: Sequence[Mapping[str, Any]] = (),
+) -> Classification:
     """Classify one instruction, consulting cache before the LLM."""
-    key = cache_key(client.model, instruction)
+    prompt_version = _validate_prompt_version(prompt_version)
+    neighbors = similar_tickets if prompt_version == "v2" else ()
+    majority_intent, agreement = knn_summary(neighbors)
+    key = cache_key(client.model, instruction, prompt_version, neighbors)
     cached = cache.get(key)
     if cached is not None:
         intent, confidence = _validate_payload(cached)
-        return Classification(intent, confidence, {}, True, key)
+        return Classification(
+            intent, confidence, {}, True, key, majority_intent, agreement
+        )
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                "Classify this customer-support ticket. Return only the required JSON.\n\n"
-                f"Ticket: {instruction}"
-            ),
-        },
-    ]
+    messages = build_classification_messages(
+        instruction,
+        prompt_version=prompt_version,
+        similar_tickets=neighbors,
+    )
     response = client.complete(messages)
     intent, confidence = parse_classification(response.content)
     cache.set(key, {"intent": intent, "confidence": confidence})
-    return Classification(intent, confidence, response.usage, False, key)
+    return Classification(
+        intent,
+        confidence,
+        response.usage,
+        False,
+        key,
+        majority_intent,
+        agreement,
+    )
 
 
 def get_intent_category_map(conn: Any) -> dict[str, str]:
@@ -233,14 +377,38 @@ def _usage_cost(usage: Mapping[str, Any]) -> float:
         return 0.0
 
 
+def retrieve_training_examples(
+    instructions: Iterable[str],
+    *,
+    database_url: str,
+    workers: int,
+    retriever: Callable[..., list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Retrieve five train tickets for each unique instruction in parallel."""
+    unique_instructions = tuple(dict.fromkeys(instructions))
+    examples: dict[str, list[dict[str, Any]]] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(
+                retriever, instruction, k=KNN_K, db_url=database_url
+            ): instruction
+            for instruction in unique_instructions
+        }
+        for future in as_completed(futures):
+            examples[futures[future]] = future.result()
+    return examples
+
+
 def run_classification(
     *,
     split: str,
     limit: int | None,
     run_id: str,
     workers: int = DEFAULT_WORKERS,
+    prompt_version: str = DEFAULT_PROMPT_VERSION,
     database_url: str | None = None,
     client: LLMClient | None = None,
+    ticket_retriever: Callable[..., list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Run classification and return aggregate run statistics."""
     import psycopg
@@ -248,21 +416,52 @@ def run_classification(
 
     database_url = database_url or os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
     client = client or OpenRouterClient()
+    prompt_version = _validate_prompt_version(prompt_version)
+    if ticket_retriever is None:
+        from pipeline.retrieve import retrieve_similar_tickets
+
+        ticket_retriever = retrieve_similar_tickets
 
     with psycopg.connect(database_url) as conn:
         intent_categories = get_intent_category_map(conn)
         tickets = fetch_tickets(conn, split, limit)
-        keys = {cache_key(client.model, instruction) for _, instruction in tickets}
-        stored_cache = load_cache(conn, keys)
 
     if not tickets:
         raise ValueError(f"No tickets found for split {split!r}")
+
+    examples_by_instruction = (
+        retrieve_training_examples(
+            (instruction for _, instruction in tickets),
+            database_url=database_url,
+            workers=workers,
+            retriever=ticket_retriever,
+        )
+        if prompt_version == "v2"
+        else {}
+    )
+    keys = {
+        cache_key(
+            client.model,
+            instruction,
+            prompt_version,
+            examples_by_instruction.get(instruction, ()),
+        )
+        for _, instruction in tickets
+    }
+    with psycopg.connect(database_url) as conn:
+        stored_cache = load_cache(conn, keys)
 
     cache = MemoryCache(stored_cache)
     # One future per unique instruction prevents concurrent cache stampedes when
     # the dataset contains duplicate ticket text.
     instruction_by_key = {
-        cache_key(client.model, instruction): instruction for _, instruction in tickets
+        cache_key(
+            client.model,
+            instruction,
+            prompt_version,
+            examples_by_instruction.get(instruction, ()),
+        ): instruction
+        for _, instruction in tickets
     }
     results_by_key: dict[str, Classification] = {}
     total_tokens = 0
@@ -277,7 +476,14 @@ def run_classification(
     )
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(classify_instruction, instruction, client, cache): key
+            executor.submit(
+                classify_instruction,
+                instruction,
+                client,
+                cache,
+                prompt_version=prompt_version,
+                similar_tickets=examples_by_instruction.get(instruction, ()),
+            ): key
             for key, instruction in instruction_by_key.items()
         }
         for future in as_completed(futures):
@@ -292,7 +498,14 @@ def run_classification(
 
     prediction_rows = []
     for ticket_id, instruction in tickets:
-        result = results_by_key[cache_key(client.model, instruction)]
+        result = results_by_key[
+            cache_key(
+                client.model,
+                instruction,
+                prompt_version,
+                examples_by_instruction.get(instruction, ()),
+            )
+        ]
         prediction_rows.append(
             (
                 ticket_id,
@@ -301,6 +514,9 @@ def run_classification(
                 intent_categories.get(result.intent, "unknown"),
                 result.confidence,
                 run_id,
+                prompt_version,
+                result.knn_majority_intent,
+                result.knn_agreement,
             )
         )
 
@@ -322,8 +538,9 @@ def run_classification(
             cursor.executemany(
                 """
                 INSERT INTO predictions
-                    (ticket_id, model, pred_intent, pred_category, confidence, run_id)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                    (ticket_id, model, pred_intent, pred_category, confidence, run_id,
+                     prompt_version, knn_majority_intent, knn_agreement)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 prediction_rows,
             )
@@ -335,6 +552,7 @@ def run_classification(
         "cache_hits": cache_hits,
         "total_tokens": total_tokens,
         "total_cost_usd": total_cost,
+        "prompt_version": prompt_version,
     }
     print(f"Wrote {len(prediction_rows)} predictions for run {run_id!r}.")
     print(f"Cache hits: {cache_hits}/{len(instruction_by_key)}")
@@ -356,12 +574,18 @@ def main() -> None:
     parser.add_argument("--limit", type=_positive_int)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--workers", type=_positive_int, default=DEFAULT_WORKERS)
+    parser.add_argument(
+        "--prompt-version",
+        choices=PROMPT_VERSIONS,
+        default=DEFAULT_PROMPT_VERSION,
+    )
     args = parser.parse_args()
     run_classification(
         split=args.split,
         limit=args.limit,
         run_id=args.run_id,
         workers=args.workers,
+        prompt_version=args.prompt_version,
     )
 
 

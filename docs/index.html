@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Support Triage Agent — Demo Console</title>
+  <meta name="description" content="Deterministic customer support triage with intent classification, pgvector RAG, citation grounding, and guardrail escalation.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/%3E%3Cpath d='m9 12 2 2 4-4'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="app-header">
+    <div class="header-container">
+      <div class="header-left">
+        <div class="brand-badge">
+          <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="m9 12 2 2 4-4"/>
+          </svg>
+          <div class="brand-titles">
+            <h1 class="brand-name">Support Triage Agent</h1>
+            <p class="brand-tagline">Deterministic intent classification, pgvector RAG, citation grounding, and guardrail escalation</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <!-- Run Selector -->
+        <div class="run-selector-wrapper" id="run-selector-container">
+          <label for="run-select" class="control-label">Run:</label>
+          <select id="run-select" class="select-control" aria-label="Select evaluation run">
+            <option value="loading">Loading runs...</option>
+          </select>
+        </div>
+
+        <!-- GitHub Repo Link -->
+        <a href="https://github.com/Jorge-AI700/support-triage-agent" target="_blank" rel="noopener noreferrer" class="btn btn-outline" title="View Source on GitHub">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+          </svg>
+          <span>GitHub</span>
+        </a>
+
+        <!-- Light / Dark Mode Toggle -->
+        <button id="theme-toggle" class="btn btn-icon-only" aria-label="Toggle light/dark theme" title="Toggle theme">
+          <svg class="theme-icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="1" x2="12" y2="3"/>
+            <line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+            <line x1="1" y1="12" x2="3" y2="12"/>
+            <line x1="21" y1="12" x2="23" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+          <svg class="theme-icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="app-main">
+    <!-- Why This Matters Banner -->
+    <div class="banner-intro" role="region" aria-label="Why this matters">
+      <span class="banner-intro-tag">Why this matters</span>
+      <p class="banner-intro-text">
+        Auto-answer routine customer support tickets with cited, policy-grounded replies. Route risky tickets (low confidence, ungrounded claims, angry sentiment, or explicit human escalation requests) directly to people.
+      </p>
+    </div>
+
+    <!-- View A: KPI Dashboard & Run Comparison -->
+    <section class="section-kpi" aria-label="Evaluation KPIs">
+      <div class="section-header">
+        <div class="section-title-wrap">
+          <h2 class="section-title">Evaluation Performance</h2>
+          <span class="badge badge-neutral" id="run-badge">Run: --</span>
+          <span class="text-muted" id="eval-count-badge">0 tickets evaluated</span>
+        </div>
+      </div>
+
+      <!-- KPI Cards Grid -->
+      <div class="kpi-grid" id="kpi-cards">
+        <!-- Rendered dynamically via JS -->
+      </div>
+
+      <!-- Before / After Comparison Table (shown when 2+ runs exist) -->
+      <div class="comparison-container hidden" id="comparison-section">
+        <div class="comparison-header">
+          <div class="comparison-title-wrap">
+            <svg class="section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="20" x2="18" y2="10"/>
+              <line x1="12" y1="20" x2="12" y2="4"/>
+              <line x1="6" y1="20" x2="6" y2="14"/>
+            </svg>
+            <h3 class="comparison-title">Run Comparison (Before vs After)</h3>
+          </div>
+          <p class="text-muted text-sm">Evaluating regression and quality deltas across pipeline versions</p>
+        </div>
+        <div class="table-responsive">
+          <table class="data-table comparison-table" id="comparison-table">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th id="comp-th-run1">Run 1</th>
+                <th id="comp-th-run2">Run 2</th>
+                <th>Delta</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="comparison-tbody">
+              <!-- Rendered via JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Escalation Reasons Bar / Pills -->
+      <div class="escalation-breakdown-card" id="reasons-card">
+        <div class="breakdown-header">
+          <span class="breakdown-title">Escalation Reasons Breakdown</span>
+          <span class="text-muted text-sm" id="reasons-total-label">--</span>
+        </div>
+        <div class="reasons-list" id="reasons-pills">
+          <!-- Rendered via JS -->
+        </div>
+      </div>
+    </section>
+
+    <!-- Views B & C: Ticket Explorer & Detail Pipeline Trace -->
+    <section class="section-workspace" aria-label="Support Triage Workspace">
+      <!-- Left Column: Ticket Explorer -->
+      <div class="workspace-explorer">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <h2 class="panel-title">Ticket Explorer</h2>
+            <span class="badge badge-subtle" id="filtered-count">0 tickets</span>
+          </div>
+
+          <!-- Quick Filters -->
+          <div class="filters-container">
+            <div class="filter-group filter-search">
+              <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"/>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <input type="text" id="filter-search" class="input-search" placeholder="Search ticket text, ID, reply..." aria-label="Search tickets">
+              <button id="clear-search" class="clear-btn hidden" aria-label="Clear search">&times;</button>
+            </div>
+
+            <div class="filter-group">
+              <label for="filter-intent" class="filter-label">Intent:</label>
+              <select id="filter-intent" class="select-filter" aria-label="Filter by intent">
+                <option value="all">All Intents</option>
+              </select>
+            </div>
+
+            <div class="filter-group">
+              <label for="filter-accuracy" class="filter-label">Classify:</label>
+              <select id="filter-accuracy" class="select-filter" aria-label="Filter by classification accuracy">
+                <option value="all">All (Correct & Wrong)</option>
+                <option value="correct">Correct only</option>
+                <option value="wrong">Wrong (Misclassified)</option>
+              </select>
+            </div>
+
+            <div class="filter-group">
+              <label for="filter-resolution" class="filter-label">Resolution:</label>
+              <select id="filter-resolution" class="select-filter" aria-label="Filter by resolution">
+                <option value="all">All Resolutions</option>
+                <option value="auto">Auto-answered</option>
+                <option value="escalated">Escalated</option>
+              </select>
+            </div>
+
+            <div class="filter-group">
+              <label for="filter-grounded" class="filter-label">Grounding:</label>
+              <select id="filter-grounded" class="select-filter" aria-label="Filter by grounding">
+                <option value="all">All Citations</option>
+                <option value="grounded">Grounded</option>
+                <option value="ungrounded">Not Grounded</option>
+              </select>
+            </div>
+
+            <button id="reset-filters" class="btn btn-ghost text-sm" title="Reset all filters">Reset</button>
+          </div>
+        </div>
+
+        <!-- Tickets Table -->
+        <div class="table-container">
+          <table class="data-table tickets-table" id="tickets-table">
+            <thead>
+              <tr>
+                <th style="width: 60px;">ID</th>
+                <th>Customer Inquiry</th>
+                <th style="width: 130px;">Pred / True</th>
+                <th style="width: 90px;">Confidence</th>
+                <th style="width: 90px;">Retrieval</th>
+                <th style="width: 90px;">Grounded</th>
+                <th style="width: 120px;">Decision</th>
+              </tr>
+            </thead>
+            <tbody id="tickets-tbody">
+              <!-- Rendered via JS -->
+            </tbody>
+          </table>
+          <div id="no-results" class="no-results hidden">
+            <svg class="no-results-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              <line x1="8" y1="11" x2="14" y2="11"/>
+            </svg>
+            <p>No tickets match the selected filters.</p>
+          </div>
+        </div>
+
+        <!-- Pagination Bar -->
+        <div class="pagination-bar">
+          <div class="pagination-info" id="pagination-info">Showing 1-25 of 200</div>
+          <div class="pagination-controls">
+            <button id="page-prev" class="btn btn-sm btn-outline" disabled>&larr; Prev</button>
+            <span class="page-current" id="page-indicator">Page 1 of 8</span>
+            <button id="page-next" class="btn btn-sm btn-outline">Next &rarr;</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: View C: Ticket Detail & Pipeline Trace -->
+      <aside class="workspace-detail" id="detail-panel" aria-label="Ticket Pipeline Trace">
+        <div class="panel-header detail-header">
+          <div class="detail-header-title">
+            <span class="detail-eyebrow">Pipeline Trace</span>
+            <h3 class="detail-title" id="trace-ticket-id">Select a ticket</h3>
+          </div>
+          <div id="trace-status-pill"></div>
+        </div>
+
+        <div class="trace-content" id="trace-content">
+          <div class="trace-empty" id="trace-empty-state">
+            <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" y1="13" x2="8" y2="13"/>
+              <line x1="16" y1="17" x2="8" y2="17"/>
+              <polyline points="10 9 9 9 8 9"/>
+            </svg>
+            <p>Select any ticket from the explorer table to inspect its end-to-end execution trace step by step.</p>
+          </div>
+
+          <!-- Trace Timeline -->
+          <div class="timeline hidden" id="trace-timeline">
+            <!-- Step 1: Inbound Ticket -->
+            <div class="timeline-step">
+              <div class="step-marker"><span class="step-number">1</span></div>
+              <div class="step-card">
+                <div class="step-head">
+                  <div class="step-tag">Step 1 &middot; Intake</div>
+                  <h4 class="step-title">Customer Inquiry</h4>
+                </div>
+                <div class="ticket-quote-box">
+                  <p class="ticket-quote-text" id="trace-instruction">--</p>
+                </div>
+                <div class="step-meta">
+                  <span class="meta-item"><strong>Category:</strong> <span id="trace-category">--</span></span>
+                  <span class="meta-item"><strong>Ground Truth Intent:</strong> <code class="intent-code" id="trace-true-intent">--</code></span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 2: Classify -->
+            <div class="timeline-step">
+              <div class="step-marker"><span class="step-number">2</span></div>
+              <div class="step-card">
+                <div class="step-head">
+                  <div class="step-tag">Step 2 &middot; Classification</div>
+                  <h4 class="step-title">Intent Prediction</h4>
+                </div>
+                <div class="classification-grid">
+                  <div class="classify-box">
+                    <span class="box-label">Predicted Intent</span>
+                    <div class="intent-row">
+                      <code class="intent-code" id="trace-pred-intent">--</code>
+                      <span id="trace-accuracy-badge" class="badge">--</span>
+                    </div>
+                  </div>
+                  <div class="classify-box">
+                    <span class="box-label">Confidence Score</span>
+                    <div class="confidence-bar-wrap">
+                      <div class="confidence-bar">
+                        <div class="confidence-fill" id="trace-conf-fill" style="width: 0%;"></div>
+                      </div>
+                      <span class="confidence-val" id="trace-conf-text">0%</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 3: Retrieve -->
+            <div class="timeline-step">
+              <div class="step-marker"><span class="step-number">3</span></div>
+              <div class="step-card">
+                <div class="step-head">
+                  <div class="step-tag">Step 3 &middot; Knowledge Retrieval</div>
+                  <h4 class="step-title">pgvector Semantic Search</h4>
+                </div>
+                <div class="retrieval-summary">
+                  <div class="meta-item">
+                    <strong>Top KB Score:</strong>
+                    <span class="metric-highlight" id="trace-top-score">--</span>
+                  </div>
+                  <div class="meta-item">
+                    <strong>KB Hit (@4):</strong>
+                    <span id="trace-kb-hit-badge" class="badge">--</span>
+                  </div>
+                </div>
+                <div class="kb-matched-section">
+                  <span class="box-label">Retrieved & Cited Knowledge Articles:</span>
+                  <div class="kb-chips-row" id="trace-cited-articles">
+                    <!-- Chips inserted via JS -->
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 4: Draft Reply -->
+            <div class="timeline-step">
+              <div class="step-marker"><span class="step-number">4</span></div>
+              <div class="step-card">
+                <div class="step-head">
+                  <div class="step-tag">Step 4 &middot; Generation</div>
+                  <h4 class="step-title">Draft Reply</h4>
+                </div>
+                <div class="reply-rendered-box" id="trace-reply-box">
+                  <!-- Rendered reply with [KB-xx] chips -->
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 5: Citation Check -->
+            <div class="timeline-step">
+              <div class="step-marker"><span class="step-number">5</span></div>
+              <div class="step-card">
+                <div class="step-head">
+                  <div class="step-tag">Step 5 &middot; Verification</div>
+                  <h4 class="step-title">Deterministic Grounding Check</h4>
+                </div>
+                <div class="verification-status" id="trace-grounded-status">
+                  <!-- Grounded status info via JS -->
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 6: Escalation Decision -->
+            <div class="timeline-step">
+              <div class="step-marker step-marker-final"><span class="step-number">6</span></div>
+              <div class="step-card step-card-decision">
+                <div class="step-head">
+                  <div class="step-tag">Step 6 &middot; Triage Policy</div>
+                  <h4 class="step-title">Escalation & Safety Guardrails</h4>
+                </div>
+                <div class="decision-outcome" id="trace-decision-outcome">
+                  <!-- Outcome via JS -->
+                </div>
+                <div class="decision-reasons-wrap" id="trace-reasons-wrap">
+                  <span class="box-label">Policy Triggers:</span>
+                  <div class="reasons-pills-list" id="trace-reasons-list">
+                    <!-- Reasons via JS -->
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer class="app-footer">
+    <div class="footer-container">
+      <div class="footer-left">
+        <span>Data credit: <strong>Bitext customer-support dataset, CDLA-Sharing-1.0</strong></span>
+      </div>
+      <div class="footer-right">
+        <span>Deterministic support triage console &middot; <a href="https://github.com/Jorge-AI700/support-triage-agent" target="_blank" rel="noopener noreferrer">support-triage-agent</a></span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -2,6 +2,10 @@
 
 Checks that all cited KB article IDs were actually retrieved, identifies any
 sentences lacking an explicit citation, and evaluates overall grounding.
+
+There is deliberately no greeting exemption: the v2 RAG prompt forbids greetings
+and filler, while v1 retains its original strict every-sentence citation check.
+The exact v2 not-covered fallback is therefore ungrounded and is escalated.
 """
 
 from __future__ import annotations
@@ -56,8 +60,11 @@ def split_sentences(text: str) -> list[str]:
         # Use negative lookbehind (?<!\b\d) to avoid splitting on decimal numbers or digits
         raw_parts = re.split(r"(?<!\b\d)(?<=[.!?])\s+(?=[A-Z0-9\[])", cleaned)
         for part in raw_parts:
-            part = part.strip()
-            if part:
+            # Inline numbered lists ("... [KB-02]. 2. Next step ...") leave bare
+            # markers like "2." behind; strip them so they are not counted as
+            # uncited sentences.
+            part = re.sub(r"^(\d+\.|\*|-)\s*", "", part.strip()).strip()
+            if part and not re.fullmatch(r"\d+\.?", part):
                 sentences.append(part)
 
     return sentences
@@ -66,6 +73,8 @@ def split_sentences(text: str) -> list[str]:
 def check_citations(
     reply: str,
     retrieved_article_ids: Iterable[str | int],
+    *,
+    prompt_version: str = "v1",
 ) -> dict[str, Any]:
     """Verify that all citations in the reply are grounded in retrieved articles.
 
@@ -81,7 +90,14 @@ def check_citations(
         - uncited_sentences: List of sentences that do not contain a [KB-xx] citation.
         - grounded: True if all cited IDs were retrieved, at least one citation exists,
           and there are zero uncited sentences.
+
+    V1 accepts a citation anywhere in its sentence. V2 enforces the stricter
+    prompt contract: one or more citations must be the final content in every
+    sentence (terminal punctuation after the citation is allowed).
     """
+    if prompt_version not in {"v1", "v2"}:
+        raise ValueError("prompt_version must be 'v1' or 'v2'")
+
     # 1. Normalize retrieved IDs into standard 'KB-XX' strings
     retrieved_set = {normalize_kb_id(aid) for aid in retrieved_article_ids}
 
@@ -96,9 +112,17 @@ def check_citations(
     sentences = split_sentences(reply)
     uncited_sentences: list[str] = []
     citation_pattern = re.compile(r"\[KB-\d+\]", re.IGNORECASE)
+    ending_citation_pattern = re.compile(
+        r"(?:\[KB-\d+\]\s*)+(?:[.!?])?$", re.IGNORECASE
+    )
 
     for sentence in sentences:
-        if not citation_pattern.search(sentence):
+        citation_is_valid = (
+            bool(ending_citation_pattern.search(sentence))
+            if prompt_version == "v2"
+            else bool(citation_pattern.search(sentence))
+        )
+        if not citation_is_valid:
             uncited_sentences.append(sentence)
 
     # 5. Determine overall grounding

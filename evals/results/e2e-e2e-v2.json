@@ -1,0 +1,35 @@
+{
+  "run_id": "e2e-v2",
+  "count": 200,
+  "intent_accuracy": 0.995,
+  "kb_hit_rate_at_4": 0.91,
+  "grounded_rate": 0.94,
+  "escalation_rate": 0.13,
+  "non_escalated_count": 174,
+  "accuracy_on_non_escalated": 0.9942528735632183,
+  "classification_error_count": 1,
+  "escalation_recall_on_errors": 0.0,
+  "cost_usd": 0.0393,
+  "escalation_reasons": [
+    {
+      "reason": "not_grounded",
+      "count": 12,
+      "rate": 0.06
+    },
+    {
+      "reason": "human_required_intent",
+      "count": 10,
+      "rate": 0.05
+    },
+    {
+      "reason": "angry_or_offensive_language",
+      "count": 3,
+      "rate": 0.015
+    },
+    {
+      "reason": "llm_knn_disagreement",
+      "count": 1,
+      "rate": 0.005
+    }
+  ]
+}

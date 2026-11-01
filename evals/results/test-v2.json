@@ -1,0 +1,286 @@
+{
+  "run_id": "test-v2",
+  "models": [
+    "deepseek/deepseek-v4.1-flash-1017"
+  ],
+  "count": 5419,
+  "intent_accuracy": 0.9963092821553792,
+  "category_accuracy": 0.9994463923233069,
+  "intent_macro_f1": 0.9963108557652118,
+  "category_macro_f1": 0.9995147151964155,
+  "per_intent": [
+    {
+      "intent": "cancel_order",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 208
+    },
+    {
+      "intent": "change_order",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 214
+    },
+    {
+      "intent": "change_shipping_address",
+      "precision": 1.0,
+      "recall": 0.9948717948717949,
+      "f1": 0.9974293059125964,
+      "support": 195
+    },
+    {
+      "intent": "check_cancellation_fee",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 190
+    },
+    {
+      "intent": "check_invoice",
+      "precision": 1.0,
+      "recall": 0.99,
+      "f1": 0.9949748743718593,
+      "support": 200
+    },
+    {
+      "intent": "check_payment_methods",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 200
+    },
+    {
+      "intent": "check_refund_policy",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 199
+    },
+    {
+      "intent": "complaint",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 200
+    },
+    {
+      "intent": "contact_customer_service",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 200
+    },
+    {
+      "intent": "contact_human_agent",
+      "precision": 0.9950248756218906,
+      "recall": 1.0,
+      "f1": 0.9975062344139651,
+      "support": 200
+    },
+    {
+      "intent": "create_account",
+      "precision": 0.9948186528497409,
+      "recall": 0.9795918367346939,
+      "f1": 0.987146529562982,
+      "support": 196
+    },
+    {
+      "intent": "delete_account",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 197
+    },
+    {
+      "intent": "delivery_options",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 196
+    },
+    {
+      "intent": "delivery_period",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 200
+    },
+    {
+      "intent": "edit_account",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 200
+    },
+    {
+      "intent": "get_invoice",
+      "precision": 0.9903381642512077,
+      "recall": 1.0,
+      "f1": 0.9951456310679612,
+      "support": 205
+    },
+    {
+      "intent": "get_refund",
+      "precision": 0.9594594594594594,
+      "recall": 0.9953271028037384,
+      "f1": 0.9770642201834863,
+      "support": 214
+    },
+    {
+      "intent": "newsletter_subscription",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 200
+    },
+    {
+      "intent": "payment_issue",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 200
+    },
+    {
+      "intent": "place_order",
+      "precision": 1.0,
+      "recall": 0.995,
+      "f1": 0.9974937343358395,
+      "support": 200
+    },
+    {
+      "intent": "recover_password",
+      "precision": 1.0,
+      "recall": 0.9949748743718593,
+      "f1": 0.9974811083123426,
+      "support": 199
+    },
+    {
+      "intent": "registration_problems",
+      "precision": 0.9851485148514851,
+      "recall": 0.995,
+      "f1": 0.9900497512437811,
+      "support": 200
+    },
+    {
+      "intent": "review",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 199
+    },
+    {
+      "intent": "set_up_shipping_address",
+      "precision": 0.995,
+      "recall": 1.0,
+      "f1": 0.9974937343358395,
+      "support": 199
+    },
+    {
+      "intent": "switch_account",
+      "precision": 0.9951923076923077,
+      "recall": 1.0,
+      "f1": 0.9975903614457832,
+      "support": 207
+    },
+    {
+      "intent": "track_order",
+      "precision": 0.9952380952380953,
+      "recall": 1.0,
+      "f1": 0.9976133651551312,
+      "support": 209
+    },
+    {
+      "intent": "track_refund",
+      "precision": 0.9945652173913043,
+      "recall": 0.953125,
+      "f1": 0.973404255319149,
+      "support": 192
+    }
+  ],
+  "top_confusions": [
+    {
+      "true_intent": "track_refund",
+      "pred_intent": "get_refund",
+      "count": 9
+    },
+    {
+      "true_intent": "create_account",
+      "pred_intent": "registration_problems",
+      "count": 3
+    },
+    {
+      "true_intent": "change_shipping_address",
+      "pred_intent": "set_up_shipping_address",
+      "count": 1
+    },
+    {
+      "true_intent": "check_invoice",
+      "pred_intent": "contact_human_agent",
+      "count": 1
+    },
+    {
+      "true_intent": "check_invoice",
+      "pred_intent": "get_invoice",
+      "count": 1
+    },
+    {
+      "true_intent": "create_account",
+      "pred_intent": "switch_account",
+      "count": 1
+    },
+    {
+      "true_intent": "get_refund",
+      "pred_intent": "track_refund",
+      "count": 1
+    },
+    {
+      "true_intent": "place_order",
+      "pred_intent": "get_invoice",
+      "count": 1
+    },
+    {
+      "true_intent": "recover_password",
+      "pred_intent": "track_order",
+      "count": 1
+    },
+    {
+      "true_intent": "registration_problems",
+      "pred_intent": "create_account",
+      "count": 1
+    }
+  ],
+  "confidence_calibration": [
+    {
+      "bucket": "0.0-0.2",
+      "count": 7,
+      "accuracy": 1.0,
+      "mean_confidence": 0.0
+    },
+    {
+      "bucket": "0.2-0.4",
+      "count": 0,
+      "accuracy": null,
+      "mean_confidence": null
+    },
+    {
+      "bucket": "0.4-0.6",
+      "count": 9,
+      "accuracy": 0.4444444444444444,
+      "mean_confidence": 0.5888888888888888
+    },
+    {
+      "bucket": "0.6-0.8",
+      "count": 14,
+      "accuracy": 1.0,
+      "mean_confidence": 0.7657142857142858
+    },
+    {
+      "bucket": "0.8-1.0",
+      "count": 5389,
+      "accuracy": 0.9972165522360363,
+      "mean_confidence": 0.9744256819447022
+    }
+  ]
+}

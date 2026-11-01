@@ -18,6 +18,19 @@ from pipeline.classify import DEFAULT_DATABASE_URL
 load_dotenv()
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
+COMPARISON_KPIS = (
+    ("count", "Tickets"),
+    ("intent_accuracy", "Intent accuracy"),
+    ("kb_hit_rate_at_4", "KB hit rate@4"),
+    ("grounded_rate", "Grounded"),
+    ("escalation_rate", "Escalation rate"),
+    ("accuracy_on_non_escalated", "Accuracy on non-escalated tickets"),
+    (
+        "escalation_recall_on_errors",
+        "Wrong classifications escalated (recall on errors)",
+    ),
+    ("cost_usd", "Incremental cost (USD)"),
+)
 
 
 def fetch_run(run_id: str, database_url: str | None = None) -> pd.DataFrame:
@@ -167,6 +180,63 @@ def render_markdown(report: dict[str, Any]) -> str:
     )
 
 
+def compute_comparison(
+    before: dict[str, Any], after: dict[str, Any]
+) -> dict[str, Any]:
+    """Build aligned before/after KPI rows with numeric deltas."""
+    rows = []
+    for key, label in COMPARISON_KPIS:
+        before_value = before.get(key)
+        after_value = after.get(key)
+        delta = (
+            after_value - before_value
+            if isinstance(before_value, (int, float))
+            and isinstance(after_value, (int, float))
+            else None
+        )
+        rows.append(
+            {
+                "key": key,
+                "label": label,
+                "before": before_value,
+                "after": after_value,
+                "delta": delta,
+            }
+        )
+    return {
+        "run_a": before["run_id"],
+        "run_b": after["run_id"],
+        "rows": rows,
+    }
+
+
+def _signed_delta(value: Any) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, int):
+        return f"{value:+d}"
+    return f"{float(value):+.4f}"
+
+
+def render_comparison_markdown(comparison: dict[str, Any]) -> str:
+    """Render a compact before/after table for two E2E runs."""
+    run_a = comparison["run_a"]
+    run_b = comparison["run_b"]
+    table = _markdown_table(
+        ["KPI", f"Before ({run_a})", f"After ({run_b})", "Delta"],
+        (
+            (
+                row["label"],
+                row["before"],
+                row["after"],
+                _signed_delta(row["delta"]),
+            )
+            for row in comparison["rows"]
+        ),
+    )
+    return f"# E2E comparison: {run_a} vs {run_b}\n\n{table}\n"
+
+
 def write_report(
     report: dict[str, Any], output_dir: Path = RESULTS_DIR
 ) -> tuple[Path, Path]:
@@ -181,14 +251,43 @@ def write_report(
     return markdown_path, json_path
 
 
+def _safe_run_id(run_id: str) -> str:
+    if Path(run_id).name != run_id or run_id in {".", ".."}:
+        raise ValueError("run_id must be a filename-safe identifier")
+    return run_id
+
+
+def write_comparison(
+    comparison: dict[str, Any], output_dir: Path = RESULTS_DIR
+) -> Path:
+    """Write the requested compare-<a>-vs-<b>.md artifact."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_a = _safe_run_id(str(comparison["run_a"]))
+    run_b = _safe_run_id(str(comparison["run_b"]))
+    path = output_dir / f"compare-{run_a}-vs-{run_b}.md"
+    path.write_text(render_comparison_markdown(comparison), encoding="utf-8")
+    return path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run-id", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--run-id")
+    mode.add_argument("--compare", nargs=2, metavar=("RUN_A", "RUN_B"))
     args = parser.parse_args()
-    report = compute_report(fetch_run(args.run_id), args.run_id)
-    markdown_path, json_path = write_report(report)
-    print(f"Wrote {markdown_path}")
-    print(f"Wrote {json_path}")
+    if args.compare:
+        run_a, run_b = args.compare
+        comparison = compute_comparison(
+            compute_report(fetch_run(run_a), run_a),
+            compute_report(fetch_run(run_b), run_b),
+        )
+        path = write_comparison(comparison)
+        print(f"Wrote {path}")
+    else:
+        report = compute_report(fetch_run(args.run_id), args.run_id)
+        markdown_path, json_path = write_report(report)
+        print(f"Wrote {markdown_path}")
+        print(f"Wrote {json_path}")
 
 
 if __name__ == "__main__":
